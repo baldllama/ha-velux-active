@@ -240,6 +240,7 @@ class VeluxActiveClient:
         self._username = username
 
     async def async_validate(self) -> str:
+        await self.async_setup()  # Load topology first
         data = await self.async_update()
         home_names = [home.name for home in data.homes.values()]
         return home_names[0] if len(home_names) == 1 else self._username
