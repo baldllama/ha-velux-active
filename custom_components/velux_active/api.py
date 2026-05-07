@@ -158,10 +158,16 @@ class VeluxActiveAuth(AbstractAsyncAuth):
                 data=data,
                 timeout=aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT),
             ) as response:
+                text = await response.text()
+                if not text.strip():
+                    raise VeluxActiveCannotConnect(
+                        f"Empty response from auth endpoint (status {response.status})"
+                    )
                 try:
-                    raw: Any = await response.json(content_type=None)
-                except aiohttp.ContentTypeError:
-                    raw = {"raw": await response.text()}
+                    import json as _json
+                    raw: Any = _json.loads(text)
+                except (ValueError, Exception):
+                    raw = {"raw": text}
         except (aiohttp.ClientError, TimeoutError) as err:
             raise VeluxActiveCannotConnect(str(err)) from err
 
