@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import logging
+
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
@@ -17,6 +19,8 @@ from .api import (
     VeluxActiveClient,
     VeluxActiveInvalidAuth,
 )
+_LOGGER = logging.getLogger(__name__)
+
 from .const import CONF_HASH_SIGN_KEY, CONF_SIGN_KEY_ID, DOMAIN
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
@@ -59,6 +63,7 @@ class VeluxActiveConfigFlow(ConfigFlow, domain=DOMAIN):
             except VeluxActiveCannotConnect:
                 errors["base"] = "cannot_connect"
             except Exception:
+                _LOGGER.exception("Unexpected error during Velux Active config flow")
                 errors["base"] = "unknown"
             else:
                 await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
@@ -122,6 +127,7 @@ class VeluxActiveConfigFlow(ConfigFlow, domain=DOMAIN):
             except VeluxActiveCannotConnect:
                 errors["base"] = "cannot_connect"
             except Exception:
+                _LOGGER.exception("Unexpected error during Velux Active reauth")
                 errors["base"] = "unknown"
             else:
                 return self.async_update_reload_and_abort(

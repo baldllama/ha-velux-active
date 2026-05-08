@@ -15,5 +15,5 @@
   "requirements": [
     "pyatmo@git+https://github.com/Niek/pyatmo.git@3cc42c1"
   ],
-  "version": "0.2.0"
+  "version": "0.2.1"
 }

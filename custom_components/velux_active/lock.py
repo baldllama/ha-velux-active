@@ -41,6 +41,13 @@ from .coordinator import VeluxActiveConfigEntry, VeluxActiveDataUpdateCoordinato
 _LOGGER = logging.getLogger(__name__)
 
 
+def _decode_hash_sign_key(hash_sign_key_b64: str) -> bytes:
+    """Decode a Hash Sign Key in standard or URL-safe Base64 form."""
+    value = hash_sign_key_b64.strip().replace("-", "+").replace("_", "/")
+    value += "=" * (-len(value) % 4)
+    return base64.b64decode(value, validate=True)
+
+
 def _compute_scenario_hash(
     hash_sign_key_b64: str,
     scenario: str,
@@ -56,7 +63,7 @@ def _compute_scenario_hash(
         result = base64encode(hash).replace('+', '-').replace('/', '_')
     """
     string_to_hash = f"scenario{scenario}{timestamp}{nonce}{bridge_id}"
-    key = base64.b64decode(hash_sign_key_b64)
+    key = _decode_hash_sign_key(hash_sign_key_b64)
     digest = hmac.new(key, string_to_hash.encode("utf-8"), hashlib.sha512).digest()
     result = base64.b64encode(digest).decode("utf-8")
     return result.replace("+", "-").replace("/", "_")
