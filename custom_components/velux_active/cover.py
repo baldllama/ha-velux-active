@@ -40,8 +40,8 @@ _LOGGER = logging.getLogger(__name__)
 # Window module identification
 # ---------------------------------------------------------------------------
 # The Velux API uses the same module type (NXO) for both roller shutters and
-# roof windows. Windows are identified by their module name containing a
-# keyword from _WINDOW_NAME_KEYWORDS (e.g. "Window", "Fenetre").
+# roof windows. Prefer the API velux_type field when pyatmo exposes it, then
+# fall back to the manual allow-list and legacy name-keyword detection.
 #
 # If your window names don't match, you can add your module IDs to
 # WINDOW_MODULE_IDS below. Find them in the HA debug logs by enabling debug
@@ -56,9 +56,13 @@ def _module_is_window(module_id: str, module: Any) -> bool:
     """Return True if this module is a roof window rather than a shutter.
 
     Checks (in order):
-    1. Module ID is in the explicit allow-list WINDOW_MODULE_IDS.
-    2. The module's name (from the API) contains a window-related keyword.
+    1. The API velux_type field identifies this as a window.
+    2. Module ID is in the explicit allow-list WINDOW_MODULE_IDS.
+    3. The module's name (from the API) contains a window-related keyword.
     """
+    velux_type = str(getattr(module, "velux_type", "") or "").lower()
+    if velux_type == "window":
+        return True
     if module_id in WINDOW_MODULE_IDS:
         return True
     name = getattr(module, "name", "") or ""
