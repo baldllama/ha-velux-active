@@ -182,8 +182,14 @@ class VeluxActiveOptionsFlow(OptionsFlow):
                 },
             )
 
-        current_key = self.config_entry.data.get(CONF_HASH_SIGN_KEY, "")
-        current_id = self.config_entry.data.get(CONF_SIGN_KEY_ID, "")
+        current_key = self.config_entry.data.get(
+            CONF_HASH_SIGN_KEY,
+            self.config_entry.options.get(CONF_HASH_SIGN_KEY, ""),
+        )
+        current_id = self.config_entry.data.get(
+            CONF_SIGN_KEY_ID,
+            self.config_entry.options.get(CONF_SIGN_KEY_ID, ""),
+        )
 
         return self.async_show_form(
             step_id="init",
