@@ -1,19 +1,17 @@
 {
   "domain": "velux_active",
   "name": "Velux Active with Netatmo",
-  "codeowners": [
-    "@baldllama"
-  ],
+  "codeowners": [],
   "config_flow": true,
-  "documentation": "https://github.com/baldllama/ha-velux-active",
+  "documentation": "https://github.com/Niek/ha-velux-active",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/baldllama/ha-velux-active/issues",
+  "issue_tracker": "https://github.com/Niek/ha-velux-active/issues",
   "loggers": [
     "pyatmo"
   ],
   "requirements": [
-    "pyatmo@git+https://github.com/Niek/pyatmo.git@3cc42c1"
+    "pyatmo>=9.3.0,<10.0.0"
   ],
-  "version": "0.2.1"
+  "version": "0.1.0"
 }
