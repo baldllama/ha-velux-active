@@ -13,7 +13,7 @@
     "pyatmo"
   ],
   "requirements": [
-    "pyatmo@git+https://github.com/Niek/pyatmo.git@3cc42c1"
+    "pyatmo@git+https://github.com/Scholdan/pyatmo.git@80f4dda"
   ],
-  "version": "0.2.1"
+  "version": "0.2.5"
 }

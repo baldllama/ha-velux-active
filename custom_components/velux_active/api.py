@@ -264,11 +264,6 @@ class VeluxActiveClient:
             if _is_cover_module(module)
         }
 
-        _LOGGER.debug(
-            "Cover modules found: %s",
-            {mid: type(m).__name__ for mid, m in covers.items()},
-        )
-
         return VeluxActiveData(
             user=self._account.user,
             homes=dict(self._account.homes),

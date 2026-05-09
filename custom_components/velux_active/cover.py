@@ -36,40 +36,26 @@ from .entity import VeluxActiveEntity
 
 _LOGGER = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Window module identification
-# ---------------------------------------------------------------------------
-# The Velux API uses the same module type (NXO) for both roller shutters and
-# roof windows. Windows are identified by their module name containing a
-# keyword from _WINDOW_NAME_KEYWORDS (e.g. "Window", "Fenetre").
-#
-# If your window names don't match, you can add your module IDs to
-# WINDOW_MODULE_IDS below. Find them in the HA debug logs by enabling debug
-# logging for custom_components.velux_active.
-# ---------------------------------------------------------------------------
-WINDOW_MODULE_IDS: set[str] = set()
-
-_WINDOW_NAME_KEYWORDS = ("window", "fenetre", "fenêtre", "raam", "fenster", "finestra")
-
-
-def _module_is_window(module_id: str, module: Any) -> bool:
-    """Return True if this module is a roof window rather than a shutter.
-
-    Checks (in order):
-    1. Module ID is in the explicit allow-list WINDOW_MODULE_IDS.
-    2. The module's name (from the API) contains a window-related keyword.
-    """
-    if module_id in WINDOW_MODULE_IDS:
-        return True
-    name = getattr(module, "name", "") or ""
-    return any(kw in name.lower() for kw in _WINDOW_NAME_KEYWORDS)
-
 
 def _decode_hash_sign_key(hash_sign_key_b64: str) -> bytes:
     """Decode a Hash Sign Key in standard or URL-safe Base64 form."""
     value = hash_sign_key_b64.strip().replace("-", "+").replace("_", "/")
     value += "=" * (-len(value) % 4)
     return base64.b64decode(value, validate=True)
+
+# ---------------------------------------------------------------------------
+# Window module identification
+# ---------------------------------------------------------------------------
+# The pyatmo module class (NXO) covers both roller shutters and roof windows,
+# so classification must use the API's velux_type field.
+# ---------------------------------------------------------------------------
+
+
+def _module_is_window(module: Any) -> bool:
+    """Return True if this module is a roof window rather than a shutter."""
+    if str(getattr(module, "velux_type", "") or "").lower() == "window":
+        return True
+    return False
 
 
 def _compute_hash(
@@ -184,6 +170,15 @@ class _BatchCommandManager:
                 nonce,
                 cmd["id"],
             )
+            _LOGGER.debug(
+                "Signed window command prepared: module=%s position=%s "
+                "timestamp=%s nonce=%s bridge=%s",
+                cmd["id"],
+                cmd["position"],
+                timestamp,
+                nonce,
+                self._bridge_id,
+            )
             modules.append({
                 "id": cmd["id"],
                 "nonce": nonce,
@@ -232,8 +227,15 @@ class _BatchCommandManager:
                         result = _json.loads(text)
                         api_errors = result.get("body", {}).get("errors", [])
                         if api_errors:
+                            _LOGGER.debug(
+                                "Signed setstate API errors: status=%s errors=%s body=%s",
+                                response.status,
+                                api_errors,
+                                text[:1000],
+                            )
                             error = HomeAssistantError(f"Signed setstate errors: {api_errors}")
         except Exception as err:
+            _LOGGER.exception("Signed setstate request failed before receiving a valid response")
             error = err
 
         for cmd in commands:
@@ -280,17 +282,18 @@ class VeluxActiveCover(VeluxActiveEntity, CoverEntity):
         super().__init__(coordinator, module_id)
         self._motion_state: str | None = None
         self._motion_target_position: int | None = None
-        self._is_window_device: bool = _module_is_window(module_id, self.module)
 
         entry_data = coordinator.config_entry.data
+        self._is_window_device: bool = _module_is_window(self.module)
         self._hash_sign_key: str = entry_data.get(CONF_HASH_SIGN_KEY, "").strip()
         self._sign_key_id: str = entry_data.get(CONF_SIGN_KEY_ID, "").strip()
         self._signing_enabled: bool = bool(self._hash_sign_key and self._sign_key_id)
 
         _LOGGER.debug(
-            "Cover entity created: id=%s name=%r is_window=%s signing=%s",
+            "Cover entity created: id=%s name=%r velux_type=%r is_window=%s signing=%s",
             module_id,
             getattr(self.module, "name", "?"),
+            getattr(self.module, "velux_type", None),
             self._is_window_device,
             self._signing_enabled,
         )
@@ -376,9 +379,25 @@ class VeluxActiveCover(VeluxActiveEntity, CoverEntity):
 
     async def _move_to_ha_position(self, ha_position: int) -> None:
         raw_position = self._ha_to_raw_position(ha_position)
+        _LOGGER.debug(
+            "Cover command requested: module=%s ha_position=%s raw_position=%s "
+            "is_window=%s signing=%s",
+            self._module_id,
+            ha_position,
+            raw_position,
+            self._is_window_device,
+            self._signing_enabled,
+        )
         if self._is_window_device and self._signing_enabled:
             home = self._get_home()
             bridge_id = self._get_bridge_id()
+            _LOGGER.debug(
+                "Using signed window path: module=%s home=%s bridge=%s timezone=%s",
+                self._module_id,
+                getattr(home, "entity_id", None),
+                bridge_id,
+                self._get_timezone(),
+            )
             if home is None or bridge_id is None:
                 raise HomeAssistantError(
                     "Could not find home or gateway for signed window command"
@@ -399,6 +418,12 @@ class VeluxActiveCover(VeluxActiveEntity, CoverEntity):
             self.async_write_ha_state()
             await self.coordinator.async_request_refresh()
         else:
+            _LOGGER.debug(
+                "Using unsigned cover path: module=%s is_window=%s signing=%s",
+                self._module_id,
+                self._is_window_device,
+                self._signing_enabled,
+            )
             await self._async_run_command(
                 self.module.async_set_target_position,
                 raw_position,

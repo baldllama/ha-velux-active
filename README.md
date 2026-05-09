@@ -37,30 +37,27 @@ Copy the `velux_active` folder into your `/config/custom_components/` directory 
 
 ## Obtaining your window signing keys
 
-Roof windows require cryptographic signing for security — the API verifies that commands come from a paired device. You need to extract two keys from the VELUX app once using a man-in-the-middle proxy. This is a one-time procedure.
+Roof windows require cryptographic signing for security. The API verifies that commands come from a paired device before it allows a roof window to open or close.
+
+You need to extract two values from the VELUX Android app once:
+
+- **Hash Sign Key** — logged by the patched app as `velux-debug`
+- **Sign Key ID** — logged by the patched app as `velux-key-id`
+
+Older instructions used mitmproxy to capture `sign_key_id`. That is no longer needed when using the patched APK debug logging described below.
 
 ### What you need
 
-- An **Android phone** (Android 8 or later) connected to the same WiFi as your VELUX gateway
-- A **computer** (Mac or Linux — Windows works too with minor path adjustments)
+- An **Android phone** connected to the same Wi-Fi as your VELUX gateway
+- A **computer** with `adb`
 - Your VELUX ACTIVE gateway powered on and accessible
 
-> **iPhone users:** The iOS app uses certificate pinning that prevents interception. You need an Android device. A cheap secondhand Android phone works fine — you only need it once.
+> **iPhone users:** The iOS app cannot be used for this extraction flow. Use an Android device; a cheap secondhand device is enough.
 
 ---
 
-### Step 1 — Install tools on your computer
+### Step 1 — Install Android platform tools
 
-**Install mitmproxy:**
-```bash
-# macOS
-brew install mitmproxy
-
-# Linux
-pip install mitmproxy
-```
-
-**Install Android platform tools (for adb):**
 ```bash
 # macOS
 brew install android-platform-tools
@@ -69,9 +66,8 @@ brew install android-platform-tools
 sudo apt install android-tools-adb
 ```
 
-Verify both are working:
+Verify `adb` is working:
 ```bash
-mitmproxy --version
 adb version
 ```
 
@@ -93,29 +89,31 @@ You should see your device listed.
 
 ---
 
-### Step 3 — Install the patched Velux APK
+### Step 3 — Install a patched Velux APK
 
-Download the Velux Active app from Aptoide on your phone, then pull it from the device:
+Patch the VELUX Android app so it logs the signing values to Android logcat. The patched app does not need to trust a proxy certificate and the phone does not need a proxy configured.
+
+The patch adds log output around the app's signing code:
+
+- `velux-key-id` — the Sign Key ID to enter in Home Assistant
+- `velux-debug` — the Hash Sign Key to enter in Home Assistant
+
+If you already have a patched APK that emits these log tags, install it and skip to [Step 4](#step-4--capture-the-keys-from-logcat).
+
+To build one yourself, install the VELUX ACTIVE app on the phone, then pull its APK files from the device:
 
 ```bash
-adb shell pm path com.velux.active
+mkdir -p ~/velux-apks
+
+adb shell pm path com.velux.active | tr -d '\r' | while IFS= read -r line; do
+  apk="${line#package:}"
+  adb pull "$apk" "$HOME/velux-apks/$(basename "$apk")"
+done
 ```
 
-This will output something like:
-```
-package:/data/app/com.velux.active-XXXX==/base.apk
-package:/data/app/com.velux.active-XXXX==/split_config.arm64_v8a.apk
-package:/data/app/com.velux.active-XXXX==/split_config.en.apk
-package:/data/app/com.velux.active-XXXX==/split_config.xxhdpi.apk
-```
+This stores `base.apk` and any split APKs in `~/velux-apks/`.
 
-Pull the base APK (replace the path with your actual path):
-```bash
-BASE="/data/app/com.velux.active-XXXX=="
-adb pull "$BASE/base.apk" ~/velux-base.apk
-```
-
-Now decompile, patch, and repack it to trust your proxy certificate:
+Now decompile, patch, and repack it:
 
 ```bash
 # Install apktool
@@ -123,55 +121,103 @@ brew install apktool   # macOS
 # or: sudo apt install apktool  # Linux
 
 # Decompile
-apktool d ~/velux-base.apk -o ~/velux_patched
-
-# Patch network security config to trust user certificates
-cat > ~/velux_patched/res/xml/network_security_config.xml << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true">
-        <trust-anchors>
-            <certificates src="system"/>
-            <certificates src="user"/>
-        </trust-anchors>
-    </base-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">fw.netatmo.net</domain>
-        <trustkit-config disableDefaultReportUri="true" enforcePinning="false">
-            <report-uri>https://cert-pinning.netatmo.com/</report-uri>
-        </trustkit-config>
-    </domain-config>
-</network-security-config>
-EOF
-
-# Disable certificate pinning in the app code
-# Find the pin checker class
-grep -rn "Certificate pinning failure" ~/velux_patched/smali_classes2/ -l
+apktool d ~/velux-apks/base.apk -o ~/velux_patched
 ```
 
-Open the file found above (it will be something like `android/c00.smali`) and find the method:
-```
-.method public final a(Ljava/lang/String;Ljava/util/List;)V
+Patch the signing code to log the key values. In the tested APK, this code is in:
+
+```bash
+~/velux_patched/smali/android/br1.smali
 ```
 
-Replace its body with just `return-void` so it looks like:
+The exact filename can change between app versions, so search for the signing mapper if needed:
+
+```bash
+grep -rn "HashMapperKey" ~/velux_patched/smali* | head
+```
+
+Open the mapper file and add two log statements in both signing methods.
+
+#### Log the Sign Key ID
+
+Search for this block:
+
 ```smali
-.method public final a(Ljava/lang/String;Ljava/util/List;)V
-    .locals 1
-    .annotation system Ldalvik/annotation/Signature;
-        value = {
-            "(",
-            "Ljava/lang/String;",
-            "Ljava/util/List<",
-            "+",
-            "Ljava/security/cert/Certificate;",
-            ">;)V"
-        }
-    .end annotation
+    invoke-virtual/range {p3 .. p3}, Landroid/fid;->c()[B
 
-    return-void
-.end method
+    move-result-object v2
+
+    invoke-virtual {v0, v2}, Landroid/br1;->a([B)Ljava/lang/String;
+
+    move-result-object v2
 ```
+
+Add the `velux-key-id` log immediately after it:
+
+```smali
+    invoke-virtual/range {p3 .. p3}, Landroid/fid;->c()[B
+
+    move-result-object v2
+
+    invoke-virtual {v0, v2}, Landroid/br1;->a([B)Ljava/lang/String;
+
+    move-result-object v2
+
+    const-string v3, "velux-key-id"
+
+    invoke-static {v3, v2}, Landroid/util/Log;->w(Ljava/lang/String;Ljava/lang/String;)I
+```
+
+#### Log the Hash Sign Key
+
+Search for this block:
+
+```smali
+    invoke-virtual/range {p3 .. p3}, Landroid/fid;->b()[B
+
+    move-result-object v10
+
+    invoke-virtual {v0, v10}, Landroid/br1;->a([B)Ljava/lang/String;
+
+    move-result-object v10
+```
+
+Add the `velux-debug` log immediately after it:
+
+```smali
+    invoke-virtual/range {p3 .. p3}, Landroid/fid;->b()[B
+
+    move-result-object v10
+
+    invoke-virtual {v0, v10}, Landroid/br1;->a([B)Ljava/lang/String;
+
+    move-result-object v10
+
+    const-string v11, "velux-debug"
+
+    invoke-static {v11, v10}, Landroid/util/Log;->w(Ljava/lang/String;Ljava/lang/String;)I
+```
+
+Repeat both additions once more lower in the same mapper file. The tested APK has two signing paths, so both `velux-key-id` and `velux-debug` should appear twice in the patched file.
+
+If the registers are different in your APK version, use the register from the nearby `move-result-object` line. The log line must log that same value.
+
+After patching, verify the tags exist:
+
+```bash
+grep -rn 'velux-key-id\|velux-debug' ~/velux_patched/smali*
+```
+
+You should see two `velux-key-id` entries and two `velux-debug` entries.
+
+The final logcat output should look like this when a roof window is moved:
+
+```text
+W velux-key-id: sign_key_id
+W velux-debug: hash_sign_key
+```
+
+Enter `hash_sign_key` as **Hash Sign Key** and `sign_key_id` as **Sign Key ID** in Home Assistant.
 
 Then rebuild and sign the APK:
 
@@ -187,81 +233,54 @@ rm -rf ~/velux_patched/build
 apktool b ~/velux_patched -o ~/velux-patched.apk
 
 # Sign
+mkdir -p ~/velux-signed
+
 apksigner sign \
   --ks ~/velux-key.keystore \
   --ks-pass pass:password123 \
   --key-pass pass:password123 \
-  --out ~/velux-signed.apk \
+  --out ~/velux-signed/base.apk \
   ~/velux-patched.apk
 ```
 
-Also sign the split APKs (replace paths with yours):
+> **Rebuild note:** If `apktool b` fails with drawable/resource errors, look for empty drawable entries such as `<drawable name="exo_..." />` in `res/values/drawables.xml` and replace them with transparent values like `<drawable name="exo_...">#00000000</drawable>`. Also check `res/drawable/thumb_manual_loading.xml`; if an `android:drawable="@null"` item causes rebuild errors, replace it with a transparent shape item.
+
+Also sign any split APKs pulled from the device:
 ```bash
-apksigner sign --ks ~/velux-key.keystore --ks-pass pass:password123 \
-  --key-pass pass:password123 \
-  --out ~/split_arm64_signed.apk "$BASE/split_config.arm64_v8a.apk"
-
-apksigner sign --ks ~/velux-key.keystore --ks-pass pass:password123 \
-  --key-pass pass:password123 \
-  --out ~/split_en_signed.apk "$BASE/split_config.en.apk"
-
-apksigner sign --ks ~/velux-key.keystore --ks-pass pass:password123 \
-  --key-pass pass:password123 \
-  --out ~/split_xxhdpi_signed.apk "$BASE/split_config.xxhdpi.apk"
+for apk in ~/velux-apks/split_config*.apk; do
+  [ -e "$apk" ] || continue
+  apksigner sign \
+    --ks ~/velux-key.keystore \
+    --ks-pass pass:password123 \
+    --key-pass pass:password123 \
+    --out "$HOME/velux-signed/$(basename "$apk")" \
+    "$apk"
+done
 ```
 
 Uninstall the existing app and install the patched version:
 ```bash
 adb uninstall com.velux.active
-adb install-multiple ~/velux-signed.apk ~/split_arm64_signed.apk \
-  ~/split_en_signed.apk ~/split_xxhdpi_signed.apk
+
+install_apks=(~/velux-signed/base.apk)
+for apk in ~/velux-signed/split_config*.apk; do
+  [ -e "$apk" ] || continue
+  install_apks+=("$apk")
+done
+
+adb install-multiple "${install_apks[@]}"
 ```
 
 > **Note for Xiaomi / MIUI users:** You may need to disable app verification in Developer Options before the install will succeed.
 
 ---
 
-### Step 4 — Set up mitmproxy
+### Step 4 — Capture the keys from logcat
 
-Find your computer's local IP address:
+Start watching the patched app logs:
+
 ```bash
-# macOS
-ipconfig getifaddr en0
-
-# Linux
-hostname -I | awk '{print $1}'
-```
-
-Start mitmproxy:
-```bash
-mitmproxy --listen-port 8080 \
-  --ignore-hosts "app-ws\.velux-active\.com|googleapis\.com|google\.com|gstatic\.com|crashlytics\.com|firebase\.com|flurry\.com"
-```
-
-On your Android phone:
-1. Go to **Settings → WiFi** → long-press your network → **Modify network** → **Advanced options**
-2. Set **Proxy** to **Manual**
-3. **Host:** your computer's IP address
-4. **Port:** `8080`
-
-Install the mitmproxy certificate on your phone:
-1. Open Chrome on your phone and go to `http://mitm.it`
-2. Tap **Android** and download the certificate
-3. Go to **Settings → Security → Install from storage → CA Certificate**
-4. Install the downloaded certificate
-
-Set the proxy on your phone via adb as well:
-```bash
-adb shell settings put global http_proxy YOUR_COMPUTER_IP:8080
-```
-
----
-
-### Step 5 — Capture the keys
-
-In a second terminal window, start watching the logs:
-```bash
-adb logcat -s velux-debug:W velux-input:W
+adb logcat -s velux-key-id:W velux-debug:W
 ```
 
 Open the patched Velux app on your phone and log in. When prompted, press the button on your VELUX gateway to complete authentication.
@@ -269,26 +288,19 @@ Open the patched Velux app on your phone and log in. When prompted, press the bu
 Once authenticated, **tap a roof window to move it** (open or close it a little).
 
 You should see output like this in your logcat terminal:
-```
-W velux-debug: AAABBBCCC123ExampleHashSignKeyGoesHere456DDDEEEFFF=
-W velux-input: dGFyZ2V0X3Bvc2l0aW9uMjYxNzc3NDk2...
-```
-
-Also look in mitmproxy for a `POST /syncapi/v1/setstate` request. Select it and press Enter to view the body — you'll see:
-```json
-{
-  "sign_key_id": "AAAAAExampleSignKeyId1234Rw==",
-  ...
-}
+```text
+W velux-key-id: sign_key_id
+W velux-debug: hash_sign_key
 ```
 
 Your two keys are:
-- **Hash Sign Key** — the value logged to `velux-debug` (e.g. `AAABBBCCC123ExampleHashSignKeyGoesHere456...`)
-- **Sign Key ID** — the `sign_key_id` value from the mitmproxy request body
+
+- **Hash Sign Key** — the `velux-debug` value
+- **Sign Key ID** — the `velux-key-id` value
 
 ---
 
-### Step 6 — Enter the keys in Home Assistant
+### Step 5 — Enter the keys in Home Assistant
 
 You can enter the keys during initial setup (Step 2 of the config flow), or add them to an existing config entry:
 
@@ -314,38 +326,9 @@ Then restart Home Assistant. Your roof windows will now have full control.
 
 ---
 
-### Step 7 — Clean up
-
-Once you have your keys, remove the proxy from your phone:
-
-1. Go to **Settings → WiFi** → your network → **Proxy → None**
-
-```bash
-# Remove proxy setting
-adb shell settings put global http_proxy :0
-```
+### Step 6 — Clean up
 
 You can uninstall the patched app and reinstall the regular Velux app from the Play Store. The keys are tied to your gateway pairing and do not change unless you re-pair your gateway.
-
----
-
-## Window detection
-
-The integration automatically identifies roof windows by looking for common words in the module name (Window, Fenetre, Fenster, Raam, Finestra). If your windows are not detected correctly, you can add their module IDs to `WINDOW_MODULE_IDS` in `cover.py`.
-
-To find your module IDs, enable debug logging for this integration:
-
-```yaml
-# configuration.yaml
-logger:
-  logs:
-    custom_components.velux_active: debug
-```
-
-Then restart HA and look for log lines like:
-```
-Cover entity created: id=aabbcc1122334455 name='Window 1' is_window=True signing=True
-```
 
 ---
 
@@ -360,7 +343,7 @@ hash   = HMAC-SHA512(key=base64decode(HashSignKey), msg=msg)
 result = base64encode(hash).replace('+', '-').replace('/', '_')
 ```
 
-When multiple windows are commanded simultaneously (e.g. via a group), they are sent in a single API call with incrementing nonces (0, 1, 2, 3...) and the same timestamp — matching the behaviour of the official Velux app.
+The timestamp is Unix time in seconds. When multiple windows are commanded simultaneously (e.g. via a group), they are sent in a single API call with incrementing nonces (0, 1, 2, 3...) and the same timestamp — matching the behaviour of the official Velux app.
 
 ---
 
@@ -477,4 +460,6 @@ If the gateway loses its cloud connection (shown by the Velux app also being una
 
 Based on the original [ha-velux-active](https://github.com/Niek/ha-velux-active) integration by [@Niek](https://github.com/Niek).
 
-Window signing support reverse-engineered using mitmproxy and smali patching. Thanks to [@ZTHawk](https://github.com/ZTHawk) for documenting the signing algorithm.
+Thanks to contributors who helped test VELUX ACTIVE roof window support, pyatmo compatibility, and Home Assistant signing behavior.
+
+Window signing support was implemented using the VELUX signing algorithm documented by [@ZTHawk](https://github.com/ZTHawk), and validated with smali patching and Android logcat.

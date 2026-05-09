@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
-
 import logging
+from typing import Any
 
 import voluptuous as vol
 
@@ -19,9 +18,9 @@ from .api import (
     VeluxActiveClient,
     VeluxActiveInvalidAuth,
 )
-_LOGGER = logging.getLogger(__name__)
-
 from .const import CONF_HASH_SIGN_KEY, CONF_SIGN_KEY_ID, DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_USERNAME): str, vol.Required(CONF_PASSWORD): str}
@@ -165,8 +164,8 @@ class VeluxActiveConfigFlow(ConfigFlow, domain=DOMAIN):
 class VeluxActiveOptionsFlow(OptionsFlow):
     """Handle options for an existing Velux Active config entry.
 
-    Allows users to update their window signing keys without deleting
-    and re-adding the integration — useful after re-pairing the gateway.
+    Allows users to update their window signing keys without deleting and
+    re-adding the integration.
     """
 
     async def async_step_init(
@@ -182,9 +181,14 @@ class VeluxActiveOptionsFlow(OptionsFlow):
                 },
             )
 
-        current_key = self.config_entry.data.get(CONF_HASH_SIGN_KEY, "")
-        current_id = self.config_entry.data.get(CONF_SIGN_KEY_ID, "")
-
+        current_key = self.config_entry.data.get(
+            CONF_HASH_SIGN_KEY,
+            self.config_entry.options.get(CONF_HASH_SIGN_KEY, ""),
+        )
+        current_id = self.config_entry.data.get(
+            CONF_SIGN_KEY_ID,
+            self.config_entry.options.get(CONF_SIGN_KEY_ID, ""),
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
