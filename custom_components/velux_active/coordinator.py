@@ -20,6 +20,11 @@ type VeluxActiveConfigEntry = ConfigEntry[VeluxActiveDataUpdateCoordinator]
 FAST_POLL_INTERVAL = timedelta(seconds=15)
 FAST_POLL_DURATION = 45  # seconds of fast polling after a movement command
 
+# Number of consecutive failures before marking entities unavailable.
+# This prevents brief token refresh failures from flickering entities to
+# unavailable — a single failed poll is kept silently using the previous data.
+_FAILURE_THRESHOLD = 3
+
 
 class VeluxActiveDataUpdateCoordinator(DataUpdateCoordinator[VeluxActiveData]):
     """Poll the Velux Active API through pyatmo."""
@@ -43,14 +48,10 @@ class VeluxActiveDataUpdateCoordinator(DataUpdateCoordinator[VeluxActiveData]):
         self.client = client
         self._fast_poll_task: asyncio.Task | None = None
         self._topology_loaded: bool = False
+        self._consecutive_failures: int = 0
 
     def start_fast_polling(self) -> None:
-        """Switch to fast polling for FAST_POLL_DURATION seconds after a movement.
-
-        After any cover movement command, HA polls every 2 seconds so the UI
-        reflects the changing position in near real-time. Polling reverts to the
-        normal interval once the window has had time to finish moving.
-        """
+        """Switch to fast polling for FAST_POLL_DURATION seconds after a movement."""
         if self._fast_poll_task is not None and not self._fast_poll_task.done():
             self._fast_poll_task.cancel()
 
@@ -66,32 +67,52 @@ class VeluxActiveDataUpdateCoordinator(DataUpdateCoordinator[VeluxActiveData]):
     async def _async_update_data(self) -> VeluxActiveData:
         """Fetch the latest account state.
 
-        Topology (homesdata) is fetched once at startup and retried on
-        subsequent polls if it fails (e.g. due to rate limiting).
-        Regular polls only call homestatus, halving API usage.
+        Transient failures (e.g. token refresh, brief network blip) are
+        tolerated up to _FAILURE_THRESHOLD consecutive times before entities
+        are marked unavailable. This prevents the token refresh cycle
+        from causing flickering unavailable states in history.
         """
         try:
             if not self._topology_loaded:
                 await self.client.async_setup()
                 self._topology_loaded = True
-            return await self.client.async_update()
+            result = await self.client.async_update()
+            self._consecutive_failures = 0  # Reset on success
+            return result
+
+        except VeluxActiveInvalidAuth as err:
+            raise ConfigEntryAuthFailed("Authentication failed") from err
+
         except (VeluxActiveCannotConnect, ApiHomeReachabilityError, ApiError, TimeoutError) as err:
             err_str = str(err)
+
+            # If rate limited, back off immediately
             if "429" in err_str or "API limit" in err_str:
                 if self._fast_poll_task is not None and not self._fast_poll_task.done():
                     self._fast_poll_task.cancel()
                 self.update_interval = UPDATE_INTERVAL
-                LOGGER.debug("Rate limited during setup — will retry topology on next poll")
-                self._topology_loaded = False  # Force retry next poll
-            if (data := getattr(self, "data", None)) is not None:
-                LOGGER.debug(
-                    "Keeping previous Velux Active data after transient update failure: %s",
-                    err or type(err).__name__,
-                )
-                return data
+                LOGGER.debug("Rate limited — reverting to normal polling interval")
+                self._topology_loaded = False
+
+            self._consecutive_failures += 1
+            previous_data = getattr(self, "data", None)
+
+            if previous_data is not None:
+                if self._consecutive_failures < _FAILURE_THRESHOLD:
+                    LOGGER.debug(
+                        "Transient failure %d/%d, keeping previous data: %s",
+                        self._consecutive_failures,
+                        _FAILURE_THRESHOLD,
+                        err or type(err).__name__,
+                    )
+                else:
+                    LOGGER.warning(
+                        "Velux Active update failed %d times in a row: %s",
+                        self._consecutive_failures,
+                        err or type(err).__name__,
+                    )
+                return previous_data
+
             raise UpdateFailed(
                 f"Error communicating with VELUX ACTIVE: {err or type(err).__name__}"
             ) from err
-        except VeluxActiveInvalidAuth as err:
-            raise ConfigEntryAuthFailed("Authentication failed") from err
-
