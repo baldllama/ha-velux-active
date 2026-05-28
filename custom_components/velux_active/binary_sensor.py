@@ -71,11 +71,7 @@ class VeluxRainSensor(CoordinatorEntity[VeluxActiveDataUpdateCoordinator], Binar
         bridge_id, bridge = _get_bridge(self.coordinator)
         if bridge is None:
             return None
-        # Try pyatmo attribute first, fall back to raw API data
         val = getattr(bridge, "is_raining", None)
-        if val is None:
-            raw = self.coordinator.data.raw_module_data.get(bridge_id, {})
-            val = raw.get("is_raining")
         return bool(val) if val is not None else False
 
     @property

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
-
-import logging
 
 import voluptuous as vol
 
@@ -19,9 +18,9 @@ from .api import (
     VeluxActiveClient,
     VeluxActiveInvalidAuth,
 )
-_LOGGER = logging.getLogger(__name__)
-
 from .const import CONF_HASH_SIGN_KEY, CONF_SIGN_KEY_ID, DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_USERNAME): str, vol.Required(CONF_PASSWORD): str}

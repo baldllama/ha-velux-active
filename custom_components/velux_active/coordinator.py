@@ -56,7 +56,7 @@ class VeluxActiveDataUpdateCoordinator(DataUpdateCoordinator[VeluxActiveData]):
             self._fast_poll_task.cancel()
 
         self.update_interval = FAST_POLL_INTERVAL
-        self._fast_poll_task = asyncio.ensure_future(self._revert_polling_after_delay())
+        self._fast_poll_task = asyncio.create_task(self._revert_polling_after_delay())
 
     async def _revert_polling_after_delay(self) -> None:
         """Revert to normal polling interval after fast poll duration expires."""

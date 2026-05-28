@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-import time
 from typing import Any, Callable
-import logging
 
 import aiohttp
 from pyatmo.account import AsyncAccount
@@ -164,9 +165,8 @@ class VeluxActiveAuth(AbstractAsyncAuth):
                         f"Empty response from auth endpoint (status {response.status})"
                     )
                 try:
-                    import json as _json
-                    raw: Any = _json.loads(text)
-                except (ValueError, Exception):
+                    raw: Any = json.loads(text)
+                except Exception:
                     raw = {"raw": text}
         except (aiohttp.ClientError, TimeoutError) as err:
             raise VeluxActiveCannotConnect(str(err)) from err

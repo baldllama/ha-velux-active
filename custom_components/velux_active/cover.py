@@ -6,12 +6,12 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
-import logging
 
-import aiohttp
 from pyatmo.exceptions import ApiError
 
 from homeassistant.components.cover import (
@@ -22,6 +22,7 @@ from homeassistant.components.cover import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import (
@@ -121,6 +122,7 @@ class _BatchCommandManager:
     def __init__(self) -> None:
         self._pending: list[dict] = []
         self._task: asyncio.Task | None = None
+        self._hass = None
         self._home_id: str | None = None
         self._bridge_id: str | None = None
         self._access_token_getter = None
@@ -132,6 +134,7 @@ class _BatchCommandManager:
         self,
         home_id: str,
         bridge_id: str,
+        hass,
         access_token_getter,
         hash_sign_key: str,
         sign_key_id: str,
@@ -139,6 +142,7 @@ class _BatchCommandManager:
     ) -> None:
         self._home_id = home_id
         self._bridge_id = bridge_id
+        self._hass = hass
         self._access_token_getter = access_token_getter
         self._hash_sign_key = hash_sign_key
         self._sign_key_id = sign_key_id
@@ -146,18 +150,18 @@ class _BatchCommandManager:
 
     def queue(self, module_id: str, raw_position: int) -> asyncio.Future:
         """Queue a window command. Returns a Future resolved when the batch fires."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
         self._pending.append({"id": module_id, "position": raw_position, "future": future})
 
         if self._task is None or self._task.done():
-            self._task = asyncio.ensure_future(self._fire_after_delay())
+            self._task = asyncio.create_task(self._fire_after_delay())
 
         return future
 
     async def _fire_after_delay(self) -> None:
         """Wait briefly for more commands to arrive, then send them all at once."""
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.15)
         await self._send_batch()
 
     async def _send_batch(self) -> None:
@@ -216,27 +220,26 @@ class _BatchCommandManager:
 
         error: Exception | None = None
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{VELUX_API_URL}/syncapi/v1/setstate",
-                    json=payload,
-                    headers=headers,
-                ) as response:
-                    # Handle empty responses (e.g. rate limit or auth failure)
-                    text = await response.text()
-                    if not text.strip():
-                        error = HomeAssistantError(
-                            f"Empty response from API (status {response.status}) "
-                            "— possibly rate limited or token expired"
-                        )
-                    elif not response.ok:
-                        error = HomeAssistantError(f"Signed setstate failed: {text}")
-                    else:
-                        import json as _json
-                        result = _json.loads(text)
-                        api_errors = result.get("body", {}).get("errors", [])
-                        if api_errors:
-                            error = HomeAssistantError(f"Signed setstate errors: {api_errors}")
+            session = async_get_clientsession(self._hass)
+            async with session.post(
+                f"{VELUX_API_URL}/syncapi/v1/setstate",
+                json=payload,
+                headers=headers,
+            ) as response:
+                # Handle empty responses (e.g. rate limit or auth failure)
+                text = await response.text()
+                if not text.strip():
+                    error = HomeAssistantError(
+                        f"Empty response from API (status {response.status}) "
+                        "— possibly rate limited or token expired"
+                    )
+                elif not response.ok:
+                    error = HomeAssistantError(f"Signed setstate failed: {text}")
+                else:
+                    result = json.loads(text)
+                    api_errors = result.get("body", {}).get("errors", [])
+                    if api_errors:
+                        error = HomeAssistantError(f"Signed setstate errors: {api_errors}")
         except Exception as err:
             error = err
 
@@ -392,6 +395,7 @@ class VeluxActiveCover(VeluxActiveEntity, CoverEntity):
             batch.setup(
                 home_id=home.entity_id,
                 bridge_id=bridge_id,
+                hass=self.coordinator.hass,
                 access_token_getter=self.coordinator.client._auth.async_get_access_token,
                 hash_sign_key=self._hash_sign_key,
                 sign_key_id=self._sign_key_id,
@@ -434,18 +438,18 @@ class VeluxActiveCover(VeluxActiveEntity, CoverEntity):
         }
 
         access_token = await self.coordinator.client._auth.async_get_access_token()
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{VELUX_API_URL}/syncapi/v1/setstate",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-            ) as response:
-                result = await response.json(content_type=None)
-                if not response.ok:
-                    raise HomeAssistantError(f"Stop command failed: {result}")
+        session = async_get_clientsession(self.coordinator.hass)
+        async with session.post(
+            f"{VELUX_API_URL}/syncapi/v1/setstate",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        ) as response:
+            result = await response.json(content_type=None)
+            if not response.ok:
+                raise HomeAssistantError(f"Stop command failed: {result}")
 
         self._motion_state = None
         self._motion_target_position = None

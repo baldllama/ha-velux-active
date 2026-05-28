@@ -13,15 +13,15 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import time
 from typing import Any
 
-import aiohttp
-
 from homeassistant.components.lock import LockEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -235,24 +235,21 @@ class VeluxDepartureLock(CoordinatorEntity[VeluxActiveDataUpdateCoordinator], Lo
     async def _async_post_setstate(self, payload: dict) -> None:
         """POST a setstate payload to the Velux API."""
         access_token = await self.coordinator.client._auth.async_get_access_token()
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{VELUX_API_URL}/syncapi/v1/setstate",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-            ) as response:
-                text = await response.text()
-                if not text.strip() or not response.ok:
-                    raise HomeAssistantError(
-                        f"API error (status {response.status}): {text[:200] or 'empty response'}"
-                    )
-                import json as _json
-                result = _json.loads(text)
-                if False:  # placeholder
-                    raise HomeAssistantError(f"Departure mode command failed: {result}")
-                errors = result.get("body", {}).get("errors", [])
-                if errors:
-                    raise HomeAssistantError(f"Departure mode errors: {errors}")
+        session = async_get_clientsession(self.coordinator.hass)
+        async with session.post(
+            f"{VELUX_API_URL}/syncapi/v1/setstate",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+        ) as response:
+            text = await response.text()
+            if not text.strip() or not response.ok:
+                raise HomeAssistantError(
+                    f"API error (status {response.status}): {text[:200] or 'empty response'}"
+                )
+            result = json.loads(text)
+            errors = result.get("body", {}).get("errors", [])
+            if errors:
+                raise HomeAssistantError(f"Departure mode errors: {errors}")
